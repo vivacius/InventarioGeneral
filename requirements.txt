@@ -1,7 +1,3 @@
 streamlit
 pygsheets
-opencv-python-headless
-streamlit-webrtc
-pandas
-av
 streamlit-quagga
