@@ -8,18 +8,19 @@ from streamlit_js_eval import streamlit_js_eval
 import tempfile
 import os
 import json
-# Obtener JSON desde variable de entorno
+# Carga las credenciales desde variable de entorno
 credenciales_json = os.getenv("GOOGLE_CREDENTIALS_JSON")
 
 if not credenciales_json:
-    st.error("❌ No se encontró la variable de entorno GOOGLE_CREDENTIALS_JSON.")
+    st.error("No se encontró la variable de entorno GOOGLE_CREDENTIALS_JSON")
     st.stop()
 
-try:
-    credenciales_dict = json.loads(credenciales_json)
-except json.JSONDecodeError:
-    st.error("❌ Las credenciales no están en formato JSON válido.")
-    st.stop()
+# Parsear JSON
+credenciales_dict = json.loads(credenciales_json)
+
+# Autorizar pygsheets con las credenciales en dict (sin archivo físico)
+gc = pygsheets.authorize(service_account_info=credenciales_dict)
+spreadsheet = gc.open('InventarioGeneral')
 
 # Autorizar pygsheets con dict
 try:
