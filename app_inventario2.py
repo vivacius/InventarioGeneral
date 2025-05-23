@@ -6,16 +6,28 @@ from streamlit_js_eval import streamlit_js_eval
 
 # Autenticación Google Sheets
 import tempfile
-
+import os
 import json
+# Obtener JSON desde variable de entorno
+credenciales_json = os.getenv("GOOGLE_CREDENTIALS_JSON")
 
-with tempfile.NamedTemporaryFile(mode="w+", suffix=".json", delete=False) as tmp:
-    json.dump(st.secrets["GOOGLE_CREDENTIALS_JSON"], tmp)
-    tmp_path = tmp.name
+if not credenciales_json:
+    st.error("❌ No se encontró la variable de entorno GOOGLE_CREDENTIALS_JSON.")
+    st.stop()
 
+try:
+    credenciales_dict = json.loads(credenciales_json)
+except json.JSONDecodeError:
+    st.error("❌ Las credenciales no están en formato JSON válido.")
+    st.stop()
 
-gc = pygsheets.authorize(service_file=tmp_path)
-spreadsheet = gc.open('InventarioGeneral')
+# Autorizar pygsheets con dict
+try:
+    gc = pygsheets.authorize(service_account_info=credenciales_dict)
+    st.success("✅ Autenticación exitosa.")
+except Exception as e:
+    st.error(f"❌ Error al autorizar Google Sheets: {e}")
+    st.stop()
 
 productos_sheet = spreadsheet.worksheet_by_title('productos')
 bodega1_sheet = spreadsheet.worksheet_by_title('inventario_bodega1')
