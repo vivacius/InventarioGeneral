@@ -1,113 +1,152 @@
 import streamlit as st
 import pandas as pd
 import pygsheets
-from datetime import datetime
-from pyzbar.pyzbar import decode
-from PIL import Image
 import json
+from datetime import datetime
+from streamlit_js_events import streamlit_js_events
 
-# Autenticación con Google Sheets
-cred_json = st.secrets["GOOGLE_CREDENTIALS_JSON"]
-with open("temp_creds.json", "w") as f:
-    json.dump(cred_json, f)
+# --- Autenticación Google Sheets usando GOOGLE_CREDENTIALS_JSON ---
+json_creds = st.secrets["GOOGLE_CREDENTIALS_JSON"]
+creds_dict = json.loads(json_creds)
 
-gc = pygsheets.authorize(service_file='temp_creds.json')
+gc = pygsheets.authorize(service_account_info=creds_dict)
 spreadsheet = gc.open('InventarioGeneral')
 
 productos_sheet = spreadsheet.worksheet_by_title('productos')
 bodega1_sheet = spreadsheet.worksheet_by_title('inventario_bodega1')
 bodega2_sheet = spreadsheet.worksheet_by_title('inventario_bodega2')
 movimientos_sheet = spreadsheet.worksheet_by_title('movimientos')
+
 df_productos = productos_sheet.get_as_df()
 
-st.title("📦 Inventario con escáner de códigos de barras (Subiendo imagen)")
+# --- JS para cámara y escaneo automático con jsQR y streamlit_js_events ---
+JS_CODE = """
+async function startScanner() {
+  const video = document.createElement('video');
+  video.setAttribute('playsinline', 'true');
+  video.style.width = '100%';
+  video.style.height = 'auto';
+  document.body.appendChild(video);
 
-menu = st.sidebar.radio("Menú", ["📷 Escanear y Registrar", "📊 Ver Inventario"])
+  const canvasElement = document.createElement('canvas');
+  const canvas = canvasElement.getContext('2d');
 
-if menu == "📷 Escanear y Registrar":
-    st.subheader("Sube una foto del código de barras")
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" }, audio: false });
+    video.srcObject = stream;
+    await video.play();
 
-    uploaded_file = st.file_uploader("Sube la foto del código de barras", type=["png", "jpg", "jpeg"])
+    const scan = () => {
+      if (video.readyState === video.HAVE_ENOUGH_DATA) {
+        canvasElement.height = video.videoHeight;
+        canvasElement.width = video.videoWidth;
+        canvas.drawImage(video, 0, 0, canvasElement.width, canvasElement.height);
+        const imageData = canvas.getImageData(0, 0, canvasElement.width, canvasElement.height);
+        const code = jsQR(imageData.data, imageData.width, imageData.height, { inversionAttempts: "dontInvert" });
 
-    if uploaded_file is not None:
-        img = Image.open(uploaded_file)
-        st.image(img, caption="Imagen subida", use_column_width=True)
+        if (code) {
+          window.streamlitJsEvents.emit("barcodeScanned", code.data);
+          stream.getTracks().forEach(track => track.stop());
+          return;
+        }
+      }
+      requestAnimationFrame(scan);
+    };
+    scan();
 
-        decoded_objects = decode(img)
-        if decoded_objects:
-            codigo = decoded_objects[0].data.decode('utf-8')
-            st.success(f"Código detectado: {codigo}")
+  } catch (e) {
+    window.streamlitJsEvents.emit("error", e.toString());
+  }
+}
 
-            producto = df_productos[df_productos['Codigo_Barras'].astype(str) == codigo]
+const script = document.createElement('script');
+script.src = "https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.js";
+script.onload = startScanner;
+document.head.appendChild(script);
+"""
 
-            if not producto.empty:
-                detalle = producto.iloc[0]['Detalle']
-                precio = producto.iloc[0]['Precio']
-                inventariable = producto.iloc[0]['Es_Inventariable']
+st.title("📦 Aplicación de Inventario con Código de Barras")
 
-                st.write(f"📝 Producto: {detalle}")
-                st.write(f"💲 Precio: {precio}")
-                st.write(f"📦 ¿Inventariable?: {inventariable}")
+# Control para reiniciar el escáner
+if "restart_scanner" not in st.session_state:
+    st.session_state.restart_scanner = True
 
-                terminado = st.radio("¿Es un producto terminado?", ["Sí", "No"])
-                movimiento = st.radio("Tipo de movimiento", ["Entrada", "Salida"])
-                cantidad = st.number_input("Cantidad", min_value=1, step=1)
-                usuario = st.text_input("Usuario responsable")
-                observaciones = st.text_area("Observaciones (opcional)")
+if st.session_state.restart_scanner:
+    st.info("Activa tu cámara y escanea el código de barras")
+    result = streamlit_js_events(js_code=JS_CODE, events=["barcodeScanned", "error"], key="barcode_scanner")
+else:
+    result = None
 
-                if st.button("Registrar movimiento"):
-                    hoja = bodega2_sheet if terminado == "Sí" else bodega1_sheet
-                    bodega = "Bodega 2" if terminado == "Sí" else "Bodega 1"
-                    df_inv = hoja.get_as_df()
+codigo = None
+if result:
+    if "barcodeScanned" in result and result["barcodeScanned"]:
+        codigo = result["barcodeScanned"]
+        st.session_state.restart_scanner = False
+    if "error" in result and result["error"]:
+        st.error(f"Error al acceder a la cámara: {result['error']}")
 
-                    if codigo in df_inv['Codigo_Barras'].astype(str).values:
-                        idx = df_inv[df_inv['Codigo_Barras'].astype(str) == codigo].index[0]
-                        cantidad_actual = df_inv.at[idx, 'Cantidad']
-                        nueva_cantidad = cantidad_actual + cantidad if movimiento == "Entrada" else max(cantidad_actual - cantidad, 0)
-                        df_inv.at[idx, 'Cantidad'] = nueva_cantidad
-                    else:
-                        nueva_fila = {
-                            'Codigo_Barras': codigo,
-                            'Detalle': detalle,
-                            'Cantidad': cantidad if movimiento == "Entrada" else 0
-                        }
-                        df_inv = pd.concat([df_inv, pd.DataFrame([nueva_fila])], ignore_index=True)
+if codigo:
+    st.success(f"Código detectado: {codigo}")
 
-                    hoja.set_dataframe(df_inv, (1, 1))
+    producto = df_productos[df_productos['Codigo_Barras'].astype(str) == codigo]
 
-                    nuevo_mov = {
-                        'Fecha y Hora': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                        'Codigo_Barras': codigo,
-                        'Movimiento': movimiento,
-                        'Cantidad': cantidad,
-                        'Bodega': bodega,
-                        'Usuario': usuario,
-                        'Observaciones': observaciones
-                    }
+    if not producto.empty:
+        detalle = producto.iloc[0]['Detalle']
+        precio = producto.iloc[0]['Precio']
+        inventariable = producto.iloc[0]['Es_Inventariable']
 
-                    df_mov = movimientos_sheet.get_as_df()
-                    df_mov = pd.concat([df_mov, pd.DataFrame([nuevo_mov])], ignore_index=True)
-                    movimientos_sheet.set_dataframe(df_mov, (1, 1))
+        st.success(f"Producto: {detalle}")
+        st.write(f"💲 Precio: {precio}")
+        st.write(f"📦 ¿Inventariable?: {inventariable}")
 
-                    st.success("✅ Movimiento registrado con éxito")
+        terminado = st.radio("¿Es un producto terminado?", ["Sí", "No"])
+        movimiento = st.radio("Tipo de movimiento", ["Entrada", "Salida"])
+        cantidad = st.number_input("Cantidad", min_value=1, step=1)
+        usuario = st.text_input("Usuario responsable")
+        observaciones = st.text_area("Observaciones (opcional)")
+
+        if st.button("Registrar movimiento"):
+            bodega = "Bodega 2" if terminado == "Sí" else "Bodega 1"
+            hoja_inventario = bodega2_sheet if terminado == "Sí" else bodega1_sheet
+
+            df_inv = hoja_inventario.get_as_df()
+
+            if codigo in df_inv['Codigo_Barras'].astype(str).values:
+                idx = df_inv[df_inv['Codigo_Barras'].astype(str) == codigo].index[0]
+                cantidad_actual = df_inv.at[idx, 'Cantidad']
+                if movimiento == "Entrada":
+                    cantidad_nueva = cantidad_actual + cantidad
+                else:
+                    cantidad_nueva = max(cantidad_actual - cantidad, 0)
+                df_inv.at[idx, 'Cantidad'] = cantidad_nueva
             else:
-                st.error("❌ Código no encontrado en la hoja de productos.")
-        else:
-            st.error("❌ No se detectó ningún código de barras en la imagen.")
+                nueva_fila = {
+                    'Codigo_Barras': codigo,
+                    'Detalle': detalle,
+                    'Cantidad': cantidad if movimiento == "Entrada" else 0
+                }
+                df_inv = pd.concat([df_inv, pd.DataFrame([nueva_fila])], ignore_index=True)
 
-elif menu == "📊 Ver Inventario":
-    st.subheader("Selecciona la bodega a visualizar")
-    elige = st.selectbox("Bodega", ["Bodega 1", "Bodega 2"])
-    hoja = bodega1_sheet if elige == "Bodega 1" else bodega2_sheet
-    df_inv = hoja.get_as_df()
+            hoja_inventario.set_dataframe(df_inv, (1,1))
 
-    st.dataframe(df_inv.style.format({"Cantidad": "{:,.0f}"}), use_container_width=True)
+            nuevo_movimiento = {
+                'Fecha y Hora': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                'Codigo_Barras': codigo,
+                'Movimiento': movimiento,
+                'Cantidad': cantidad,
+                'Bodega': bodega,
+                'Usuario': usuario,
+                'Observaciones': observaciones
+            }
 
-    total_items = df_inv['Cantidad'].sum()
-    total_productos = df_inv.shape[0]
+            df_mov = movimientos_sheet.get_as_df()
+            df_mov = pd.concat([df_mov, pd.DataFrame([nuevo_movimiento])], ignore_index=True)
+            movimientos_sheet.set_dataframe(df_mov, (1,1))
 
-    col1, col2 = st.columns(2)
-    col1.metric("Total de productos únicos", total_productos)
-    col2.metric("Cantidad total en inventario", total_items)
+            st.success("✅ Movimiento registrado correctamente")
+            # Reiniciar escáner para nuevo código
+            st.session_state.restart_scanner = True
 
-    st.caption("Solo se muestran cantidades y detalles, sin precios ni datos financieros.")
+else:
+    if st.session_state.restart_scanner:
+        st.write("Escanea un código para comenzar.")
