@@ -2,7 +2,10 @@ import streamlit as st
 import pandas as pd
 import pygsheets
 from datetime import datetime
-from streamlit_barcode_scanner import st_barcode_scanner
+from pyzxing import BarCodeReader
+from streamlit_webrtc import webrtc_streamer, VideoTransformerBase
+import cv2
+import numpy as np
 
 # Autenticación con Google Sheets
 import json
@@ -26,15 +29,39 @@ df_productos = productos_sheet.get_as_df()
 # Interfaz
 st.title("📦 Inventario con escáner de códigos de barras")
 
+class VideoTransformer(VideoTransformerBase):
+    def __init__(self):
+        self.reader = BarCodeReader()
+
+    def transform(self, frame):
+        img = frame.to_ndarray(format="bgr24")
+
+        # Convertir la imagen a escala de grises para mayor precisión
+        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+
+        # Detectar el código de barras
+        barcodes = self.reader.decode_array(gray)
+
+        if barcodes:
+            for barcode in barcodes:
+                decoded_data = barcode[0]
+                st.session_state.scanned_code = decoded_data
+                st.success(f"Código escaneado: {decoded_data}")
+                
+        return img
+
+if 'scanned_code' not in st.session_state:
+    st.session_state.scanned_code = None
+
 menu = st.sidebar.radio("Menú", ["📷 Escanear y Registrar", "📊 Ver Inventario"])
 
 if menu == "📷 Escanear y Registrar":
-    st.subheader("Escanea el código de barras")
-    scanned_code = st_barcode_scanner()
+    st.subheader("Escanea el código de barras con tu cámara")
 
-    if scanned_code:
-        st.success(f"Código escaneado: {scanned_code}")
-        codigo = scanned_code
+    webrtc_streamer(key="example", video_transformer_factory=VideoTransformer)
+
+    if st.session_state.scanned_code:
+        codigo = st.session_state.scanned_code
         producto = df_productos[df_productos['Codigo_Barras'].astype(str) == codigo]
 
         if not producto.empty:
@@ -106,6 +133,5 @@ elif menu == "📊 Ver Inventario":
     col2.metric("Cantidad total en inventario", total_items)
 
     st.caption("Solo se muestran cantidades y detalles, sin precios ni datos financieros.")
-
 
 #python -m streamlit run c:/Users/sacor/Downloads/app_inventario2.py
