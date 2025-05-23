@@ -7,9 +7,12 @@ from streamlit_js_eval import streamlit_js_eval
 # Autenticación Google Sheets
 import tempfile
 
+import json
+
 with tempfile.NamedTemporaryFile(mode="w+", suffix=".json", delete=False) as tmp:
-    tmp.write(st.secrets["GOOGLE_CREDENTIALS_JSON"])
+    json.dump(st.secrets["GOOGLE_CREDENTIALS_JSON"], tmp)
     tmp_path = tmp.name
+
 
 gc = pygsheets.authorize(service_file=tmp_path)
 spreadsheet = gc.open('InventarioGeneral')
