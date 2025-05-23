@@ -1,4 +1,6 @@
 streamlit
 pygsheets
 pandas
-streamlit-barcode-scanner
+streamlit-webrtc
+opencv-python
+pyzxing
