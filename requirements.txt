@@ -1,7 +1,6 @@
 streamlit
 pygsheets
 opencv-python-headless
-pyzbar
 streamlit-webrtc
 pandas
 av
