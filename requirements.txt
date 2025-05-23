@@ -2,3 +2,5 @@ streamlit
 pygsheets
 streamlit-quagga
 pandas
+json
+os
