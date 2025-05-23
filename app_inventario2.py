@@ -2,7 +2,7 @@ import streamlit as st
 import pandas as pd
 import pygsheets
 from datetime import datetime
-from streamlit_quagga import barcode_scanner
+from streamlit_barcode_scanner import st_barcode_scanner
 
 # Autenticación con Google Sheets
 import json
@@ -30,7 +30,7 @@ menu = st.sidebar.radio("Menú", ["📷 Escanear y Registrar", "📊 Ver Inventa
 
 if menu == "📷 Escanear y Registrar":
     st.subheader("Escanea el código de barras")
-    scanned_code = barcode_scanner()
+    scanned_code = st_barcode_scanner()
 
     if scanned_code:
         st.success(f"Código escaneado: {scanned_code}")
@@ -106,5 +106,6 @@ elif menu == "📊 Ver Inventario":
     col2.metric("Cantidad total en inventario", total_items)
 
     st.caption("Solo se muestran cantidades y detalles, sin precios ni datos financieros.")
+
 
 #python -m streamlit run c:/Users/sacor/Downloads/app_inventario2.py
