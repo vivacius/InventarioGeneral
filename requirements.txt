@@ -1,6 +1,4 @@
 streamlit
 pygsheets
 pandas
-streamlit-webrtc
-opencv-python
-pyzxing
+streamlit-quagga
