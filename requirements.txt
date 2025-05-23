@@ -1,4 +1,5 @@
 streamlit
-pygsheets
 pandas
-streamlit-quagga
+pygsheets
+pyzbar
+Pillow
