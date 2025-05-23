@@ -1,93 +1,75 @@
 import streamlit as st
 import pandas as pd
 import pygsheets
-import json
 from datetime import datetime
-from streamlit_js_events import streamlit_js_events
+from streamlit_js_eval import streamlit_js_eval
 
-# --- Autenticación Google Sheets usando GOOGLE_CREDENTIALS_JSON ---
-json_creds = st.secrets["GOOGLE_CREDENTIALS_JSON"]
-creds_dict = json.loads(json_creds)
+# --- Autenticación con Google Sheets desde secretos ---
+import json
+import os
 
-gc = pygsheets.authorize(service_account_info=creds_dict)
+# Guardar el JSON en un archivo temporal para pygsheets
+with open("tmp_google_credentials.json", "w") as f:
+    f.write(st.secrets["GOOGLE_CREDENTIALS_JSON"])
+
+gc = pygsheets.authorize(service_file="tmp_google_credentials.json")
 spreadsheet = gc.open('InventarioGeneral')
 
+# Hojas del Google Sheets
 productos_sheet = spreadsheet.worksheet_by_title('productos')
 bodega1_sheet = spreadsheet.worksheet_by_title('inventario_bodega1')
 bodega2_sheet = spreadsheet.worksheet_by_title('inventario_bodega2')
 movimientos_sheet = spreadsheet.worksheet_by_title('movimientos')
 
+# Cargar base de productos
 df_productos = productos_sheet.get_as_df()
-
-# --- JS para cámara y escaneo automático con jsQR y streamlit_js_events ---
-JS_CODE = """
-async function startScanner() {
-  const video = document.createElement('video');
-  video.setAttribute('playsinline', 'true');
-  video.style.width = '100%';
-  video.style.height = 'auto';
-  document.body.appendChild(video);
-
-  const canvasElement = document.createElement('canvas');
-  const canvas = canvasElement.getContext('2d');
-
-  try {
-    const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" }, audio: false });
-    video.srcObject = stream;
-    await video.play();
-
-    const scan = () => {
-      if (video.readyState === video.HAVE_ENOUGH_DATA) {
-        canvasElement.height = video.videoHeight;
-        canvasElement.width = video.videoWidth;
-        canvas.drawImage(video, 0, 0, canvasElement.width, canvasElement.height);
-        const imageData = canvas.getImageData(0, 0, canvasElement.width, canvasElement.height);
-        const code = jsQR(imageData.data, imageData.width, imageData.height, { inversionAttempts: "dontInvert" });
-
-        if (code) {
-          window.streamlitJsEvents.emit("barcodeScanned", code.data);
-          stream.getTracks().forEach(track => track.stop());
-          return;
-        }
-      }
-      requestAnimationFrame(scan);
-    };
-    scan();
-
-  } catch (e) {
-    window.streamlitJsEvents.emit("error", e.toString());
-  }
-}
-
-const script = document.createElement('script');
-script.src = "https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.js";
-script.onload = startScanner;
-document.head.appendChild(script);
-"""
 
 st.title("📦 Aplicación de Inventario con Código de Barras")
 
-# Control para reiniciar el escáner
-if "restart_scanner" not in st.session_state:
-    st.session_state.restart_scanner = True
+# --- HTML5 QR CODE ---
+st.markdown("""
+<h5>📸 Escanea el código de barras:</h5>
+<div id="reader" width="300px"></div>
+<script src="https://unpkg.com/html5-qrcode" type="text/javascript"></script>
+<script>
+    function domReady(fn) {
+        if (document.readyState === "interactive" || document.readyState === "complete") {
+            fn();
+        } else {
+            document.addEventListener("DOMContentLoaded", fn);
+        }
+    }
 
-if st.session_state.restart_scanner:
-    st.info("Activa tu cámara y escanea el código de barras")
-    result = streamlit_js_events(js_code=JS_CODE, events=["barcodeScanned", "error"], key="barcode_scanner")
-else:
-    result = None
+    domReady(function () {
+        let lastResult = "";
+        const html5QrCode = new Html5Qrcode("reader");
+        html5QrCode.start(
+            { facingMode: "environment" },
+            {
+                fps: 10,
+                qrbox: { width: 250, height: 250 }
+            },
+            (decodedText, decodedResult) => {
+                if (decodedText !== lastResult) {
+                    lastResult = decodedText;
+                    const streamlitEvent = new CustomEvent("streamlit:barcode", {
+                        detail: decodedText
+                    });
+                    window.dispatchEvent(streamlitEvent);
+                }
+            },
+            (errorMessage) => {}
+        );
+    });
+</script>
+""", unsafe_allow_html=True)
 
-codigo = None
-if result:
-    if "barcodeScanned" in result and result["barcodeScanned"]:
-        codigo = result["barcodeScanned"]
-        st.session_state.restart_scanner = False
-    if "error" in result and result["error"]:
-        st.error(f"Error al acceder a la cámara: {result['error']}")
+barcode = streamlit_js_eval(js_expressions="null", events=["barcode"], key="barcode") or {}
+
+codigo = barcode.get("barcode")
 
 if codigo:
-    st.success(f"Código detectado: {codigo}")
-
+    st.success(f"✅ Código escaneado: {codigo}")
     producto = df_productos[df_productos['Codigo_Barras'].astype(str) == codigo]
 
     if not producto.empty:
@@ -95,7 +77,7 @@ if codigo:
         precio = producto.iloc[0]['Precio']
         inventariable = producto.iloc[0]['Es_Inventariable']
 
-        st.success(f"Producto: {detalle}")
+        st.write(f"🧾 Producto: **{detalle}**")
         st.write(f"💲 Precio: {precio}")
         st.write(f"📦 ¿Inventariable?: {inventariable}")
 
@@ -114,10 +96,7 @@ if codigo:
             if codigo in df_inv['Codigo_Barras'].astype(str).values:
                 idx = df_inv[df_inv['Codigo_Barras'].astype(str) == codigo].index[0]
                 cantidad_actual = df_inv.at[idx, 'Cantidad']
-                if movimiento == "Entrada":
-                    cantidad_nueva = cantidad_actual + cantidad
-                else:
-                    cantidad_nueva = max(cantidad_actual - cantidad, 0)
+                cantidad_nueva = cantidad_actual + cantidad if movimiento == "Entrada" else max(cantidad_actual - cantidad, 0)
                 df_inv.at[idx, 'Cantidad'] = cantidad_nueva
             else:
                 nueva_fila = {
@@ -127,7 +106,7 @@ if codigo:
                 }
                 df_inv = pd.concat([df_inv, pd.DataFrame([nueva_fila])], ignore_index=True)
 
-            hoja_inventario.set_dataframe(df_inv, (1,1))
+            hoja_inventario.set_dataframe(df_inv, (1, 1))
 
             nuevo_movimiento = {
                 'Fecha y Hora': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
@@ -141,12 +120,10 @@ if codigo:
 
             df_mov = movimientos_sheet.get_as_df()
             df_mov = pd.concat([df_mov, pd.DataFrame([nuevo_movimiento])], ignore_index=True)
-            movimientos_sheet.set_dataframe(df_mov, (1,1))
+            movimientos_sheet.set_dataframe(df_mov, (1, 1))
 
-            st.success("✅ Movimiento registrado correctamente")
-            # Reiniciar escáner para nuevo código
-            st.session_state.restart_scanner = True
-
+            st.success("✅ Movimiento registrado correctamente.")
+    else:
+        st.error("❌ Código no encontrado en la hoja de productos.")
 else:
-    if st.session_state.restart_scanner:
-        st.write("Escanea un código para comenzar.")
+    st.info("Esperando que escanees un código...")
