@@ -1,6 +1,4 @@
 streamlit
 pygsheets
-streamlit-quagga
 pandas
-json
-os
+streamlit-barcode-scanner
