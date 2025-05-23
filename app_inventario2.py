@@ -2,95 +2,98 @@ import streamlit as st
 import pandas as pd
 import pygsheets
 from datetime import datetime
-from streamlit_quagga import barcode_scanner
+from pyzbar.pyzbar import decode
+from PIL import Image
 import json
 
-# Leer credenciales desde Streamlit secrets y guardar temporalmente
+# Autenticación con Google Sheets
 cred_json = st.secrets["GOOGLE_CREDENTIALS_JSON"]
 with open("temp_creds.json", "w") as f:
     json.dump(cred_json, f)
 
-# Autenticar Google Sheets
 gc = pygsheets.authorize(service_file='temp_creds.json')
 spreadsheet = gc.open('InventarioGeneral')
 
-# Obtener hojas
 productos_sheet = spreadsheet.worksheet_by_title('productos')
 bodega1_sheet = spreadsheet.worksheet_by_title('inventario_bodega1')
 bodega2_sheet = spreadsheet.worksheet_by_title('inventario_bodega2')
 movimientos_sheet = spreadsheet.worksheet_by_title('movimientos')
 df_productos = productos_sheet.get_as_df()
 
-# Título
-st.title("📦 Inventario con escáner de códigos de barras")
+st.title("📦 Inventario con escáner de códigos de barras (Subiendo imagen)")
 
-# Menú lateral
 menu = st.sidebar.radio("Menú", ["📷 Escanear y Registrar", "📊 Ver Inventario"])
 
 if menu == "📷 Escanear y Registrar":
-    st.subheader("Escanea el código de barras")
-    scanned_code = barcode_scanner()
+    st.subheader("Sube una foto del código de barras")
 
-    if scanned_code:
-        st.success(f"Código escaneado: {scanned_code}")
-        codigo = scanned_code
-        producto = df_productos[df_productos['Codigo_Barras'].astype(str) == codigo]
+    uploaded_file = st.file_uploader("Sube la foto del código de barras", type=["png", "jpg", "jpeg"])
 
-        if not producto.empty:
-            detalle = producto.iloc[0]['Detalle']
-            precio = producto.iloc[0]['Precio']
-            inventariable = producto.iloc[0]['Es_Inventariable']
+    if uploaded_file is not None:
+        img = Image.open(uploaded_file)
+        st.image(img, caption="Imagen subida", use_column_width=True)
 
-            st.write(f"📝 Producto: {detalle}")
-            st.write(f"💲 Precio: {precio}")
-            st.write(f"📦 ¿Inventariable?: {inventariable}")
+        decoded_objects = decode(img)
+        if decoded_objects:
+            codigo = decoded_objects[0].data.decode('utf-8')
+            st.success(f"Código detectado: {codigo}")
 
-            terminado = st.radio("¿Es un producto terminado?", ["Sí", "No"])
-            movimiento = st.radio("Tipo de movimiento", ["Entrada", "Salida"])
-            cantidad = st.number_input("Cantidad", min_value=1, step=1)
-            usuario = st.text_input("Usuario responsable")
-            observaciones = st.text_area("Observaciones (opcional)")
+            producto = df_productos[df_productos['Codigo_Barras'].astype(str) == codigo]
 
-            if st.button("Registrar movimiento"):
-                hoja = bodega2_sheet if terminado == "Sí" else bodega1_sheet
-                bodega = "Bodega 2" if terminado == "Sí" else "Bodega 1"
-                df_inv = hoja.get_as_df()
+            if not producto.empty:
+                detalle = producto.iloc[0]['Detalle']
+                precio = producto.iloc[0]['Precio']
+                inventariable = producto.iloc[0]['Es_Inventariable']
 
-                if codigo in df_inv['Codigo_Barras'].astype(str).values:
-                    idx = df_inv[df_inv['Codigo_Barras'].astype(str) == codigo].index[0]
-                    cantidad_actual = df_inv.at[idx, 'Cantidad']
-                    if movimiento == "Entrada":
-                        nueva_cantidad = cantidad_actual + cantidad
+                st.write(f"📝 Producto: {detalle}")
+                st.write(f"💲 Precio: {precio}")
+                st.write(f"📦 ¿Inventariable?: {inventariable}")
+
+                terminado = st.radio("¿Es un producto terminado?", ["Sí", "No"])
+                movimiento = st.radio("Tipo de movimiento", ["Entrada", "Salida"])
+                cantidad = st.number_input("Cantidad", min_value=1, step=1)
+                usuario = st.text_input("Usuario responsable")
+                observaciones = st.text_area("Observaciones (opcional)")
+
+                if st.button("Registrar movimiento"):
+                    hoja = bodega2_sheet if terminado == "Sí" else bodega1_sheet
+                    bodega = "Bodega 2" if terminado == "Sí" else "Bodega 1"
+                    df_inv = hoja.get_as_df()
+
+                    if codigo in df_inv['Codigo_Barras'].astype(str).values:
+                        idx = df_inv[df_inv['Codigo_Barras'].astype(str) == codigo].index[0]
+                        cantidad_actual = df_inv.at[idx, 'Cantidad']
+                        nueva_cantidad = cantidad_actual + cantidad if movimiento == "Entrada" else max(cantidad_actual - cantidad, 0)
+                        df_inv.at[idx, 'Cantidad'] = nueva_cantidad
                     else:
-                        nueva_cantidad = max(cantidad_actual - cantidad, 0)
-                    df_inv.at[idx, 'Cantidad'] = nueva_cantidad
-                else:
-                    nueva_fila = {
+                        nueva_fila = {
+                            'Codigo_Barras': codigo,
+                            'Detalle': detalle,
+                            'Cantidad': cantidad if movimiento == "Entrada" else 0
+                        }
+                        df_inv = pd.concat([df_inv, pd.DataFrame([nueva_fila])], ignore_index=True)
+
+                    hoja.set_dataframe(df_inv, (1, 1))
+
+                    nuevo_mov = {
+                        'Fecha y Hora': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                         'Codigo_Barras': codigo,
-                        'Detalle': detalle,
-                        'Cantidad': cantidad if movimiento == "Entrada" else 0
+                        'Movimiento': movimiento,
+                        'Cantidad': cantidad,
+                        'Bodega': bodega,
+                        'Usuario': usuario,
+                        'Observaciones': observaciones
                     }
-                    df_inv = pd.concat([df_inv, pd.DataFrame([nueva_fila])], ignore_index=True)
 
-                hoja.set_dataframe(df_inv, (1, 1))
+                    df_mov = movimientos_sheet.get_as_df()
+                    df_mov = pd.concat([df_mov, pd.DataFrame([nuevo_mov])], ignore_index=True)
+                    movimientos_sheet.set_dataframe(df_mov, (1, 1))
 
-                nuevo_mov = {
-                    'Fecha y Hora': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                    'Codigo_Barras': codigo,
-                    'Movimiento': movimiento,
-                    'Cantidad': cantidad,
-                    'Bodega': bodega,
-                    'Usuario': usuario,
-                    'Observaciones': observaciones
-                }
-
-                df_mov = movimientos_sheet.get_as_df()
-                df_mov = pd.concat([df_mov, pd.DataFrame([nuevo_mov])], ignore_index=True)
-                movimientos_sheet.set_dataframe(df_mov, (1, 1))
-
-                st.success("✅ Movimiento registrado con éxito")
+                    st.success("✅ Movimiento registrado con éxito")
+            else:
+                st.error("❌ Código no encontrado en la hoja de productos.")
         else:
-            st.error("❌ Código no encontrado en la hoja de productos.")
+            st.error("❌ No se detectó ningún código de barras en la imagen.")
 
 elif menu == "📊 Ver Inventario":
     st.subheader("Selecciona la bodega a visualizar")
