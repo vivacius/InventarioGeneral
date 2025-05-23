@@ -4,29 +4,26 @@ import pygsheets
 from datetime import datetime
 from streamlit_js_eval import streamlit_js_eval
 
-# --- Autenticación con Google Sheets desde secretos ---
-import json
-import os
+# Autenticación Google Sheets
+import tempfile
 
-# Guardar el JSON en un archivo temporal para pygsheets
-with open("tmp_google_credentials.json", "w") as f:
-    f.write(st.secrets["GOOGLE_CREDENTIALS_JSON"])
+with tempfile.NamedTemporaryFile(mode="w+", suffix=".json", delete=False) as tmp:
+    tmp.write(st.secrets["GOOGLE_CREDENTIALS_JSON"])
+    tmp_path = tmp.name
 
-gc = pygsheets.authorize(service_file="tmp_google_credentials.json")
+gc = pygsheets.authorize(service_file=tmp_path)
 spreadsheet = gc.open('InventarioGeneral')
 
-# Hojas del Google Sheets
 productos_sheet = spreadsheet.worksheet_by_title('productos')
 bodega1_sheet = spreadsheet.worksheet_by_title('inventario_bodega1')
 bodega2_sheet = spreadsheet.worksheet_by_title('inventario_bodega2')
 movimientos_sheet = spreadsheet.worksheet_by_title('movimientos')
 
-# Cargar base de productos
 df_productos = productos_sheet.get_as_df()
 
-st.title("📦 Aplicación de Inventario con Código de Barras")
+st.title("📦 Inventario con Escaneo de Código de Barras (html5-qrcode)")
 
-# --- HTML5 QR CODE ---
+# Insertar el escaner html5-qrcode y capturar eventos JS
 st.markdown("""
 <h5>📸 Escanea el código de barras:</h5>
 <div id="reader" width="300px"></div>
@@ -39,7 +36,6 @@ st.markdown("""
             document.addEventListener("DOMContentLoaded", fn);
         }
     }
-
     domReady(function () {
         let lastResult = "";
         const html5QrCode = new Html5Qrcode("reader");
@@ -65,7 +61,6 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 barcode = streamlit_js_eval(js_expressions="null", events=["barcode"], key="barcode") or {}
-
 codigo = barcode.get("barcode")
 
 if codigo:
@@ -96,13 +91,17 @@ if codigo:
             if codigo in df_inv['Codigo_Barras'].astype(str).values:
                 idx = df_inv[df_inv['Codigo_Barras'].astype(str) == codigo].index[0]
                 cantidad_actual = df_inv.at[idx, 'Cantidad']
-                cantidad_nueva = cantidad_actual + cantidad if movimiento == "Entrada" else max(cantidad_actual - cantidad, 0)
+                if movimiento == "Entrada":
+                    cantidad_nueva = cantidad_actual + cantidad
+                else:
+                    cantidad_nueva = max(cantidad_actual - cantidad, 0)
                 df_inv.at[idx, 'Cantidad'] = cantidad_nueva
             else:
+                cantidad_inicial = cantidad if movimiento == "Entrada" else 0
                 nueva_fila = {
                     'Codigo_Barras': codigo,
                     'Detalle': detalle,
-                    'Cantidad': cantidad if movimiento == "Entrada" else 0
+                    'Cantidad': cantidad_inicial
                 }
                 df_inv = pd.concat([df_inv, pd.DataFrame([nueva_fila])], ignore_index=True)
 
@@ -123,7 +122,9 @@ if codigo:
             movimientos_sheet.set_dataframe(df_mov, (1, 1))
 
             st.success("✅ Movimiento registrado correctamente.")
+
     else:
         st.error("❌ Código no encontrado en la hoja de productos.")
 else:
-    st.info("Esperando que escanees un código...")
+    st.info("📷 Apunta la cámara a un código de barras para escanear automáticamente.")
+
